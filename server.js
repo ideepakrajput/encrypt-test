@@ -20,12 +20,13 @@ const users = [
     { id: 5, name: 'Charlie Brown', email: 'charlie@example.com', role: 'Developer', salary: 70000 }
 ];
 
-// Encryption functions
+// Encryption functions (fixed - using createCipheriv instead of deprecated createCipher)
 function encrypt(text) {
     try {
         const algorithm = 'aes-256-cbc';
         const iv = crypto.randomBytes(16);
-        const cipher = crypto.createCipher(algorithm, ENCRYPTION_KEY);
+        const key = crypto.pbkdf2Sync(ENCRYPTION_KEY, 'salt', 1, 32, 'sha256'); // PBKDF2 for browser compatibility
+        const cipher = crypto.createCipheriv(algorithm, key, iv);
 
         let encrypted = cipher.update(text, 'utf8', 'hex');
         encrypted += cipher.final('hex');
@@ -44,8 +45,9 @@ function decrypt(encryptedData) {
         const textParts = encryptedData.split(':');
         const iv = Buffer.from(textParts.shift(), 'hex');
         const encryptedText = textParts.join(':');
+        const key = crypto.pbkdf2Sync(ENCRYPTION_KEY, 'salt', 1, 32, 'sha256'); // PBKDF2 for browser compatibility
 
-        const decipher = crypto.createDecipher(algorithm, ENCRYPTION_KEY);
+        const decipher = crypto.createDecipheriv(algorithm, key, iv);
         let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
 
@@ -56,13 +58,15 @@ function decrypt(encryptedData) {
     }
 }
 
-// Encryption middleware
+// Encryption middleware (fixed - prevent infinite loop)
 const encryptionMiddleware = (req, res, next) => {
     const originalSend = res.send;
 
     res.send = function (data) {
-        // Check if client requests encryption
-        if (req.headers['x-encrypt'] === 'true') {
+        // Check if client requests encryption and we haven't already processed this
+        if (req.headers['x-encrypt'] === 'true' && !this.encryptionProcessed) {
+            this.encryptionProcessed = true; // Prevent infinite loop
+
             try {
                 const dataString = typeof data === 'object' ? JSON.stringify(data) : data;
                 const encryptedData = encrypt(dataString);
@@ -79,7 +83,9 @@ const encryptionMiddleware = (req, res, next) => {
             }
         }
 
-        console.log('📤 Sending plain response');
+        if (!this.encryptionProcessed) {
+            console.log('📤 Sending plain response');
+        }
         return originalSend.call(this, data);
     };
 
@@ -141,6 +147,37 @@ app.get('/api/health', (req, res) => {
         status: 'OK',
         timestamp: new Date().toISOString(),
         encryption: 'Available'
+    });
+});
+
+// Add a test endpoint that returns the decryption parameters
+app.get('/api/decrypt-test', (req, res) => {
+    const testData = { message: 'Hello World', timestamp: new Date().toISOString() };
+    const encrypted = encrypt(JSON.stringify(testData));
+    const decrypted = decrypt(encrypted);
+
+    res.json({
+        original: testData,
+        encrypted: encrypted,
+        decrypted: JSON.parse(decrypted),
+        encryption_working: JSON.stringify(testData) === decrypted
+    });
+});
+
+// Add an endpoint that returns both plain and encrypted data for comparison
+app.get('/api/users/debug', (req, res) => {
+    const userData = {
+        success: true,
+        data: users,
+        message: 'Debug endpoint - both plain and encrypted'
+    };
+
+    const encrypted = encrypt(JSON.stringify(userData));
+
+    res.json({
+        plain: userData,
+        encrypted: encrypted,
+        canDecrypt: decrypt(encrypted) !== null
     });
 });
 
